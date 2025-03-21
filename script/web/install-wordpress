@@ -148,7 +148,22 @@ systemctl reload nginx
 
 # Cài đặt SSL
 if ! certbot certificates | grep -q "$DOMAIN"; then
-  certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m no-reply@$DOMAIN --redirect
+  echo "========================================"
+  echo "🔹 Kiểm tra SSL cho domain: $DOMAIN"
+  echo "🔹 Chưa tìm thấy chứng chỉ SSL, tiến hành cài đặt..."
+  echo "========================================"
+
+  certbot_output=$(certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "no-reply@$DOMAIN" --redirect 2>&1)
+
+  if [[ $? -eq 0 ]]; then
+    echo "Cài đặt SSL thành công cho $DOMAIN!"
+  else
+    echo "Cài đặt SSL thất bại cho $DOMAIN!"
+    echo "Lỗi chi tiết:"
+    echo "$certbot_output"
+  fi
+else
+  echo "SSL đã được cài đặt cho $DOMAIN."
 fi
 
 # Cấu hình wp-config.php
