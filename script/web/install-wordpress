@@ -19,6 +19,8 @@ WEB_ROOT="/var/www/$DOMAIN"
 DB_NAME="${DOMAIN//./_}" # Tên cơ sở dữ liệu, thay thế dấu chấm bằng dấu gạch dưới
 DB_USER=${USERNAME:-$DB_NAME"_user"}
 
+TIMEOUT_DURATION=60 # Thời gian timeout (giây)
+
 # Kiểm tra nếu không nhập các thông tin cần thiết thì báo lỗi
 if [ -z "$TEMPLATE_URL" ] || [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASS" ]; then
   echo "Error: Vui lòng nhập URL của template."
@@ -146,26 +148,6 @@ ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
 nginx -t
 systemctl reload nginx
 
-# Cài đặt SSL
-if ! certbot certificates | grep -q "$DOMAIN"; then
-  echo "========================================"
-  echo "🔹 Kiểm tra SSL cho domain: $DOMAIN"
-  echo "🔹 Chưa tìm thấy chứng chỉ SSL, tiến hành cài đặt..."
-  echo "========================================"
-
-  certbot_output=$(certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "no-reply@$DOMAIN" --redirect 2>&1)
-
-  if [[ $? -eq 0 ]]; then
-    echo "Cài đặt SSL thành công cho $DOMAIN!"
-  else
-    echo "Cài đặt SSL thất bại cho $DOMAIN!"
-    echo "Lỗi chi tiết:"
-    echo "$certbot_output"
-  fi
-else
-  echo "SSL đã được cài đặt cho $DOMAIN."
-fi
-
 # Cấu hình wp-config.php
 if [ ! -f "$WEB_ROOT/wp-config.php" ]; then
   wp config create --dbname="$DB_NAME" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="localhost" --path=$WEB_ROOT --allow-root
@@ -191,3 +173,108 @@ echo "  - Password: $DB_PASSWORD"
 echo "Thông tin tài khoản admin:"
 echo "  - Username: $ADMIN_USERNAME"
 echo "  - Password: $ADMIN_PASS"
+
+install_certbot() {
+  if ! command -v certbot &>/dev/null; then
+    echo "Certbot chưa được cài đặt. Đang cài đặt certbot..."
+    if [ -x "$(command -v apt)" ]; then
+      apt update && apt install -y certbot
+    elif [ -x "$(command -v yum)" ]; then
+      yum install -y certbot
+    else
+      echo "Error: Không thể xác định trình quản lý gói để cài đặt certbot. Vui lòng cài đặt thủ công."
+      return 1
+    fi
+    echo "Certbot đã được cài đặt thành công."
+  else
+    echo "Certbot đã được cài đặt."
+  fi
+}
+
+# Hàm kiểm tra proxy
+check_proxy() {
+  local cf_ip=$(dig +short "$DOMAIN" | head -n 1)
+  local cf_proxy_subnet="104.16.0.0/12"
+
+  if [[ $(ipcalc -c "$cf_ip" "$cf_proxy_subnet") == "true" ]]; then
+    echo "Error: Không thể đăng ký SSL vì proxy. Vui lòng tắt proxy để đăng ký SSL."
+    exit 1
+  fi
+}
+
+# Hàm kiểm tra chứng chỉ SSL
+check_ssl() {
+  echo "Đang kiểm tra chứng chỉ SSL cho $DOMAIN ..."
+  SSL_INFO=$(timeout $TIMEOUT_DURATION bash -c "echo | openssl s_client -connect \"$DOMAIN:443\" -servername \"$DOMAIN\" 2>/dev/null | openssl x509 -noout -dates 2>/dev/null")
+
+  if [ $? -ne 0 ]; then
+    echo "Timeout hoặc không tìm thấy chứng chỉ SSL cho $DOMAIN."
+    return 1
+  else
+    echo "Chứng chỉ SSL hoạt động bình thường cho $DOMAIN."
+    END_DATE=$(echo "$SSL_INFO" | grep 'notAfter' | cut -d= -f2)
+    echo "Ngày hết hạn chứng chỉ SSL: $END_DATE"
+    return 1
+  fi
+}
+
+# Hàm tạo chứng chỉ SSL mới bằng certbot
+create_ssl() {
+  echo "Đang tạo chứng chỉ SSL mới cho $DOMAIN ..."
+  echo "Tạm thời dừng nginx để sử dụng certbot ở chế độ standalone..."
+  systemctl stop nginx || {
+    echo "Error: Không thể dừng nginx."
+    exit 1
+  }
+
+  timeout $TIMEOUT_DURATION certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos -m admin@$DOMAIN
+  if [ $? -eq 0 ]; then
+    echo "Chứng chỉ SSL đã được tạo thành công."
+  else
+    echo "Error: Timeout hoặc không thể tạo chứng chỉ SSL."
+    exit 1
+  fi
+}
+
+# Hàm tạo chứng chỉ SSL mới bằng certbot
+create_ssl() {
+  echo "Đang tạo chứng chỉ SSL mới cho $DOMAIN_OR_IP ..."
+  echo "Tạm thời dừng nginx để sử dụng certbot ở chế độ standalone..."
+  systemctl stop nginx || {
+    echo "Error: Không thể dừng nginx."
+    exit 1
+  }
+
+  timeout $TIMEOUT_DURATION certbot certonly --standalone -d "$DOMAIN_OR_IP" --non-interactive --agree-tos -m admin@$DOMAIN_OR_IP
+  if [ $? -eq 0 ]; then
+    echo "Chứng chỉ SSL đã được tạo thành công."
+  else
+    echo "Error: Timeout hoặc không thể tạo chứng chỉ SSL."
+    exit 1
+  fi
+}
+
+# Hàm khởi động lại dịch vụ nginx
+restart_service() {
+  echo "Đang khởi động lại nginx..."
+  systemctl restart nginx || {
+    echo "Error: Lỗi khi khởi động lại nginx."
+    exit 1
+  }
+  echo "Dịch vụ nginx đã được khởi động lại thành công."
+}
+
+# Đảm bảo nginx luôn được khởi động lại dù có lỗi
+trap 'restart_service' EXIT
+
+# Cài đặt certbot nếu cần
+install_certbot
+
+# Kiểm tra proxy
+check_proxy
+
+# Kiểm tra SSL
+check_ssl
+
+# Cài đặt ssl
+create_ssl
