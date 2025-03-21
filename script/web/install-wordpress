@@ -238,14 +238,14 @@ create_ssl() {
 
 # Hàm tạo chứng chỉ SSL mới bằng certbot
 create_ssl() {
-  echo "Đang tạo chứng chỉ SSL mới cho $DOMAIN_OR_IP ..."
+  echo "Đang tạo chứng chỉ SSL mới cho $DOMAIN ..."
   echo "Tạm thời dừng nginx để sử dụng certbot ở chế độ standalone..."
   systemctl stop nginx || {
     echo "Error: Không thể dừng nginx."
     exit 1
   }
 
-  timeout $TIMEOUT_DURATION certbot certonly --standalone -d "$DOMAIN_OR_IP" --non-interactive --agree-tos -m admin@$DOMAIN_OR_IP
+  timeout $TIMEOUT_DURATION certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos -m admin@$DOMAIN
   if [ $? -eq 0 ]; then
     echo "Chứng chỉ SSL đã được tạo thành công."
   else
