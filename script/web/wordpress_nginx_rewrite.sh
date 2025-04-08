@@ -6,47 +6,47 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Kiểm tra xem người dùng có nhập đủ tham số không
+# Kiểm tra đầu vào
 if [ -z "$1" ] || [ -z "$2" ]; then
-  echo "Cách sử dụng: $0 <domain> <doạn cấu hình cần thêm>"
+  echo "Cách dùng: $0 <domain> <tên_file_template.conf>"
+  echo "Ví dụ: ./script.sh cucre.net wordpress.conf"
   exit 1
 fi
 
-# Lấy domain và đoạn cần thêm từ tham số đầu vào
 DOMAIN="$1"
-EXTRA_CONFIG="$2"
+TEMPLATE_NAME="$2"
+TEMPLATE_DIR="/etc/nginx/rewrite_templates"
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 NGINX_LINK="/etc/nginx/sites-enabled/$DOMAIN"
+REWRITE_FILE="$TEMPLATE_DIR/$DOMAIN.conf"
+SELECTED_TEMPLATE="$TEMPLATE_DIR/$TEMPLATE_NAME"
+BACKUP_FILE="$NGINX_CONF.bak"
+
+# Cài Nginx nếu chưa có
+if ! command -v nginx &> /dev/null; then
+  echo "Đang cài Nginx..."
+  apt update && apt install -y nginx
+fi
+
+# Tạo thư mục web
 WEB_ROOT="/var/www/$DOMAIN"
+mkdir -p "$WEB_ROOT"
+chown -R www-data:www-data "$WEB_ROOT"
 
-# Cài đặt Nginx nếu chưa có
-if ! command -v nginx &>/dev/null; then
-  echo "Nginx chưa được cài đặt. Đang tiến hành cài đặt..."
-  apt update
-  apt install -y nginx
+# Kiểm tra template có tồn tại không
+if [ ! -f "$SELECTED_TEMPLATE" ]; then
+  echo "Template không tồn tại: $SELECTED_TEMPLATE"
+  exit 1
 fi
 
-# Tạo thư mục web nếu chưa tồn tại
-if [ ! -d "$WEB_ROOT" ]; then
-  mkdir -p "$WEB_ROOT"
-  chown -R www-data:www-data "$WEB_ROOT"
-fi
+# Copy template thành file rewrite riêng cho domain
+cp "$SELECTED_TEMPLATE" "$REWRITE_FILE"
+echo "Tạo rewrite riêng: $REWRITE_FILE"
 
-# Nếu file cấu hình đã tồn tại, chỉ cập nhật phần URL Rewrite
-if [ -f "$NGINX_CONF" ]; then
-  echo "File cấu hình Nginx đã tồn tại. Kiểm tra và cập nhật..."
-  
-  # Kiểm tra xem đoạn cấu hình đã tồn tại chưa
-  if ! grep -qF "$EXTRA_CONFIG" "$NGINX_CONF"; then
-    echo "Thêm đoạn cấu hình vào file..."
-    sed -i "/^    error_log /i \    $EXTRA_CONFIG" "$NGINX_CONF"
-  else
-    echo "Error: Đoạn cấu hình đã tồn tại, không cần thêm."
-  fi
-else
-  echo "Tạo file cấu hình Nginx mới tại: $NGINX_CONF"
-
-  cat >"$NGINX_CONF" <<EOF
+# Tạo file nginx config nếu chưa có
+if [ ! -f "$NGINX_CONF" ]; then
+  echo "Tạo file cấu hình mới: $NGINX_CONF"
+  cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -57,48 +57,52 @@ server {
         try_files \$uri \$uri/ /index.php?\$args;
     }
 
-    location ~ \.php$ {
+    #REWRITE-START
+    include $REWRITE_FILE;
+    #REWRITE-END
+
+    location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|otf|ttc|font.css)$ {
-        expires max;
-        log_not_found off;
-    }
-
-    location = /robots.txt { allow all; log_not_found off; access_log off; }
-    location = /favicon.ico { log_not_found off; access_log off; }
-
-    error_page 404 /index.php;
+    error_log /var/log/nginx/${DOMAIN}-error.log;
+    access_log /var/log/nginx/${DOMAIN}-access.log;
 
     location ~ /\.ht {
         deny all;
     }
-
-    # Redirect wp-admin
-    rewrite /wp-admin$ \$scheme://\$host\$uri/ permanent;
-
-    # Thêm đoạn cấu hình được chỉ định
-    $EXTRA_CONFIG
 }
 EOF
+
+else
+  echo "File config đã tồn tại, backup và cập nhật include..."
+
+  cp "$NGINX_CONF" "$BACKUP_FILE"
+
+  # Nếu chưa có đoạn REWRITE-START thì thêm vào trước dấu }
+  if ! grep -q "#REWRITE-START" "$NGINX_CONF"; then
+    awk -v line="    #REWRITE-START\n    include $REWRITE_FILE;\n    #REWRITE-END" '
+      $0 ~ /^\}/ && !done { print line; done=1 }
+      { print }
+    ' "$NGINX_CONF" > "${NGINX_CONF}.tmp" && mv "${NGINX_CONF}.tmp" "$NGINX_CONF"
+  else
+    echo "Đã có #REWRITE-START, sẽ cập nhật file rewrite tương ứng."
+  fi
 fi
 
-# Kiểm tra nếu symbolic link đã tồn tại, nếu không thì tạo mới
-if [ ! -L "$NGINX_LINK" ]; then
-  ln -sf "$NGINX_CONF" "$NGINX_LINK"
+# Tạo symlink nếu chưa có
+[ -L "$NGINX_LINK" ] || ln -s "$NGINX_CONF" "$NGINX_LINK"
+
+# Kiểm tra và reload Nginx
+if nginx -t; then
+  echo "Cấu hình hợp lệ. Đang reload..."
+  systemctl reload nginx
+  echo "Rewrite đã được áp dụng theo chuẩn aaPanel."
+else
+  echo "Lỗi Nginx! Khôi phục lại file cũ."
+  cp "$BACKUP_FILE" "$NGINX_CONF"
+  nginx -t && systemctl reload nginx
 fi
-
-# Kiểm tra lỗi Nginx
-if ! nginx -t; then
-  echo "Error: Lỗi cấu hình Nginx! Vui lòng kiểm tra lại."
-  exit 1
-fi
-
-# Nếu không có lỗi, khởi động lại Nginx
-systemctl restart nginx
-
-echo "Cấu hình Nginx đã được cập nhật"
