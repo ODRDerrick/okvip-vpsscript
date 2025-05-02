@@ -40,9 +40,9 @@ for DOMAIN in "$@"; do
     echo "Kiểm tra SSL:"
     NGINX_CONF=$(grep -rl "$DOMAIN" /etc/nginx/sites-enabled 2>/dev/null | head -n 1)
     if [[ -n "$NGINX_CONF" && $(grep -c "443" "$NGINX_CONF") -gt 0 ]]; then
-        echo "✔ Có SSL trong file cấu hình: $NGINX_CONF"
+        echo "Có SSL trong file cấu hình: $NGINX_CONF"
     else
-        echo "✘ Không thấy SSL trong cấu hình Nginx"
+        echo "Không thấy SSL trong cấu hình Nginx"
     fi
 
     echo ""
